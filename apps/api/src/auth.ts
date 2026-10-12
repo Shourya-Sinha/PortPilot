@@ -59,14 +59,16 @@ export function getSessionId(req: FastifyRequest): string | null {
 }
 
 /** True when the request origin is same-origin or a trusted local dev origin. */
-export function isTrustedOrigin(origin: string | undefined, host: string | undefined): boolean {
+export function isTrustedOrigin(origin: string | undefined, host: string | undefined, forwardedHost?: string): boolean {
   if (!origin) return true; // same-origin non-browser or curl
   try {
     const o = new URL(origin);
     const hostname = o.hostname;
     if (hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1') return true;
-    // LAN access: allow origins whose host matches the Host header.
+    // Same-origin: the origin host must match the Host (or X-Forwarded-Host
+    // when running behind a local/preview reverse proxy).
     if (host && o.host === host) return true;
+    if (forwardedHost && o.host === forwardedHost.split(',')[0].trim()) return true;
     return false;
   } catch {
     return false;
@@ -76,7 +78,8 @@ export function isTrustedOrigin(origin: string | undefined, host: string | undef
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export function authGuard(req: FastifyRequest, reply: FastifyReply, authToken: string): boolean {
-  if (!isTrustedOrigin(req.headers.origin as string | undefined, req.headers.host)) {
+  const fwdHost = req.headers['x-forwarded-host'];
+  if (!isTrustedOrigin(req.headers.origin as string | undefined, req.headers.host, Array.isArray(fwdHost) ? fwdHost[0] : (fwdHost as string | undefined))) {
     reply.code(403).send({ error: 'Origin not allowed' });
     return false;
   }
