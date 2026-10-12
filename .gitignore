@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Runtime data (never commit — contents ignored, placeholder .gitkeep kept)
+data/*
+workspaces/*
+artifacts/*
+logs/*
+!data/.gitkeep
+!workspaces/.gitkeep
+!artifacts/.gitkeep
+!logs/.gitkeep
+
+# Secrets and local config
+.env
+.env.local
+*.key
+secrets.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Test / coverage
+coverage/
+.vitest/

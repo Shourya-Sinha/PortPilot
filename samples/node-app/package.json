@@ -1,0 +1,14 @@
+{
+  "name": "portpilot-sample-node-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sample Node.js app for testing PortPilot deployments (zero dependencies).",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "build": "node -e \"console.log('Nothing to build - sample is pre-built')\""
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
