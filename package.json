@@ -1,0 +1,34 @@
+{
+  "name": "portpilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PortPilot HomeDeploy Dashboard - a local-first deployment platform for Windows (and Linux/macOS).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "build": "tsc -b tsconfig.build.json && npm run build --workspace @portpilot/dashboard",
+    "build:server": "tsc -b tsconfig.build.json",
+    "build:dashboard": "npm run build --workspace @portpilot/dashboard",
+    "dev": "node scripts/dev.mjs",
+    "start": "node scripts/start.mjs",
+    "stop": "node scripts/stop.mjs",
+    "test": "npm run build:server && vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b tsconfig.build.json --pretty",
+    "clean": "node scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@portpilot/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@portpilot/shared": "*",
+    "@portpilot/database": "*",
+    "@portpilot/github": "*",
+    "@portpilot/build-engine": "*",
+    "@portpilot/runtime-manager": "*",
+    "@portpilot/hostname-manager": "*",
+    "@portpilot/reverse-proxy": "*",
+    "@portpilot/dns-server": "*",
+    "@portpilot/network-diagnostics": "*",
+    "@portpilot/public-access": "*",
+    "@portpilot/worker": "*",
+    "fastify": "^5.2.0"
+  }
+}

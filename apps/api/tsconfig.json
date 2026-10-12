@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/database" },
+    { "path": "../../packages/github" },
+    { "path": "../../packages/build-engine" },
+    { "path": "../../packages/runtime-manager" },
+    { "path": "../../packages/hostname-manager" },
+    { "path": "../../packages/reverse-proxy" },
+    { "path": "../../packages/dns-server" },
+    { "path": "../../packages/network-diagnostics" },
+    { "path": "../../packages/public-access" },
+    { "path": "../worker" }
+  ]
+}
