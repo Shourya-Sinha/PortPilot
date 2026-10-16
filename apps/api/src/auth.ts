@@ -98,18 +98,25 @@ export function authGuard(req: FastifyRequest, reply: FastifyReply, authToken: s
   return true;
 }
 
+/**
+ * IMPORTANT: each cookie must be sent as its OWN `Set-Cookie` header.
+ *
+ * `Set-Cookie` is exempt from the usual comma-folding rule (RFC 6265bis §5.2,
+ * fetch spec "set-cookie" handling): browsers do NOT split it on commas. Sending
+ * `pp_session=...; Path=/, pp_csrf=...; Path=/` as one header makes the browser
+ * store a single `pp_session` cookie and treat `pp_csrf` as an unknown attribute
+ * of it — so `document.cookie` never contains `pp_csrf`, the dashboard sends an
+ * empty `x-csrf-token`, and every POST/PATCH/DELETE fails with
+ * `403 {"code":"csrf_failed"}`. Always pass an array, never a joined string.
+ */
 export function setSessionCookies(reply: FastifyReply, sid: string, csrf: string, secure: boolean): void {
-  reply.header(
-    'set-cookie',
-    [
-      `pp_session=${sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`,
-      `pp_csrf=${csrf}; Path=/; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`,
-    ].join(', '),
-  );
+  const maxAge = Math.floor(SESSION_TTL_MS / 1000);
+  const attrs = `Path=/; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+  reply.header('set-cookie', [`pp_session=${sid}; HttpOnly; ${attrs}`, `pp_csrf=${csrf}; ${attrs}`]);
 }
 
 export function clearSessionCookies(reply: FastifyReply): void {
-  reply.header('set-cookie', ['pp_session=; Path=/; HttpOnly; Max-Age=0', 'pp_csrf=; Path=/; Max-Age=0'].join(', '));
+  reply.header('set-cookie', ['pp_session=; Path=/; HttpOnly; Max-Age=0', 'pp_csrf=; Path=/; Max-Age=0']);
 }
 
 /**

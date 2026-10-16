@@ -12,7 +12,24 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * CSRF token handling (double-submit).
+ *
+ * Preferred source is the value the API returns in the login / `me` JSON body,
+ * held in memory: it survives nothing across a reload, but it is NOT readable by
+ * JavaScript running on another local port the way a `pp_csrf` cookie is
+ * (cookies ignore ports, so a dev server on localhost:5173 can read a cookie set
+ * by localhost:4300). The cookie is kept as a fallback for the case where the
+ * page re-mounts without going through `me()`.
+ */
+let memoryCsrf = '';
+
+export function setCsrfToken(token: string | null | undefined): void {
+  memoryCsrf = typeof token === 'string' ? token : '';
+}
+
 function csrfToken(): string {
+  if (memoryCsrf) return memoryCsrf;
   const m = document.cookie.match(/(?:^|;\s*)pp_csrf=([^;]+)/);
   return m ? decodeURIComponent(m[1]) : '';
 }
@@ -22,13 +39,18 @@ export async function api<T = unknown>(
   opts: { method?: string; body?: unknown; raw?: boolean } = {},
 ): Promise<T> {
   const method = opts.method ?? 'GET';
+  // Only declare a JSON body when we actually send one: Fastify rejects
+  // `content-type: application/json` with an empty body (400
+  // "Body cannot be empty when content-type is set to 'application/json'"),
+  // which is what silently broke POST /api/auth/logout.
+  const hasBody = opts.body !== undefined;
   const res = await fetch(path, {
     method,
     headers: {
-      'content-type': 'application/json',
+      ...(hasBody ? { 'content-type': 'application/json' } : {}),
       ...(method !== 'GET' && method !== 'HEAD' ? { 'x-csrf-token': csrfToken() } : {}),
     },
-    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    body: hasBody ? JSON.stringify(opts.body) : undefined,
     credentials: 'same-origin',
   });
   if (res.status === 401) {
@@ -42,13 +64,25 @@ export async function api<T = unknown>(
 }
 
 export async function login(token: string): Promise<{ csrf: string }> {
-  return api('/api/auth/login', { method: 'POST', body: { token } });
+  const res = await api<{ ok: boolean; csrf: string }>('/api/auth/login', { method: 'POST', body: { token } });
+  setCsrfToken(res.csrf);
+  return res;
 }
 
 export async function me(): Promise<{ authenticated: boolean; csrf?: string }> {
   const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
-  if (res.status === 401) return { authenticated: false };
-  return res.json();
+  if (res.status === 401) {
+    setCsrfToken(null);
+    return { authenticated: false };
+  }
+  const data = (await res.json()) as { authenticated: boolean; csrf?: string };
+  setCsrfToken(data.csrf ?? null);
+  return data;
+}
+
+export async function logout(): Promise<void> {
+  await api('/api/auth/logout', { method: 'POST' });
+  setCsrfToken(null);
 }
 
 export function sseUrl(path: string): string {
