@@ -51,7 +51,24 @@ async function main(): Promise<void> {
   // DNS module (optional).
   let dns: DnsServer | null = null;
   if (cfg.dnsEnabled) {
-    dns = new DnsServer({ host: cfg.dnsHost, port: cfg.dnsPort, zone: cfg.dnsZone, ttl: cfg.dnsTtl, logger: logger.child('dns') });
+    dns = new DnsServer({
+      host: cfg.dnsHost,
+      port: cfg.dnsPort,
+      zone: cfg.dnsZone,
+      ttl: cfg.dnsTtl,
+      logger: logger.child('dns'),
+      nsName: cfg.dnsNsName ?? undefined,
+      tcp: cfg.dnsTcp,
+    });
+    // A public zone needs SOA/NS plus an address. `DNS_PUBLIC_IP` publishes the
+    // apex and `*.<zone>`, which is what a registrar delegation points at.
+    if (cfg.dnsPublicIp) dns.setWildcard(cfg.dnsPublicIp, cfg.dnsTtl);
+    if (cfg.dnsNsName && !cfg.dnsPublicIp) {
+      logger.warn('DNS_NS_NAME is set without DNS_PUBLIC_IP: SOA/NS will be published but the zone has no address records.');
+    }
+    if (dns.authoritative) {
+      logger.info(`DNS zone ${cfg.dnsZone} is authoritative (NS ${cfg.dnsNsName})${cfg.dnsTcp ? ' with TCP' : ''}.`);
+    }
     try {
       for (const h of db.listHostnames()) {
         dns.setRecord(h.hostname, '127.0.0.1', cfg.dnsTtl);

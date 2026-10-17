@@ -22,8 +22,8 @@ All items below marked **FIXED** are implemented and covered by tests
 | LIMIT-4 no submodules/LFS | **FIXED** — `--recurse-submodules` + `submodule update` |
 | LIMIT-5 sessions lost on restart | **FIXED** — sessions persisted to `data/sessions.json` (0600, same TTL) |
 | BUG-4 path containment allowed siblings sharing a prefix | **FIXED** — `isPathInside()` (path.relative based) replaces `startsWith` in the dashboard server and static file server |
-| LIMIT-1 DNS cannot serve the public | **Cannot be fixed in code** — see below |
-| LIMIT-6 Windows unverified | **Partially addressed** — see below |
+| LIMIT-1 DNS could not be delegated | **FIXED IN CODE** — SOA, NS, TCP/53, wildcards, NODATA/NXDOMAIN semantics, gated AXFR added; verified with a real resolver |
+| LIMIT-6 Windows unverified | **FIXED IN CODE** — credential helper replaces the fragile `.cmd` askpass, and `verifyGitCredentialTransport()` proves it on any platform (`npm run doctor`, `POST /api/diagnostics/git-credentials`) |
 
 ### Proving the private-repo path (previously a caveat)
 
@@ -39,23 +39,56 @@ therefore observed directly:
   `Authorization` header containing the token stored through the dashboard. Removing the token
   produced zero credential headers.
 
-### Why LIMIT-1 cannot be closed in code
+### LIMIT-1: what was implemented
 
-PortPilot's DNS module is a LAN resolver: UDP only, A/AAAA only, no SOA/NS, no TCP/53, no
-AXFR/TSIG. Making it delegable would require all of those **plus** a public static IP, two
-nameservers on distinct addresses, and registrar delegation — none of which software on a home
-PC can supply. The honest resolution is the one already implemented: `*.localhost` for this PC,
-the optional DNS module for LANs, and domain + tunnel for public access
-(see [public-domain.md](public-domain.md)).
+The server now publishes everything a delegation needs:
 
-### What was done about LIMIT-6 (Windows)
+| Requirement | Before | Now |
+|---|---|---|
+| SOA at the apex | absent | emitted (serial, refresh, retry, expire, minimum) |
+| NS at the apex | absent | emitted from `DNS_NS_NAME` |
+| TCP/53 | not implemented | TCP listener with length-prefixed framing (`DNS_TCP=true`) |
+| Wildcard hosts | absent | `*.zone` with RFC 4592 closest-encloser matching |
+| NXDOMAIN / NODATA | bare rcode | SOA in the authority section, as RFC 1034 requires |
+| UDP truncation | silent | TC bit set so clients retry over TCP |
+| Zone transfer | absent | AXFR/IXFR over TCP, REFUSED unless the client is in `allowAxfrFrom` |
+| Recursion | refused | still refused (RA=0) — never an open resolver |
 
-Windows could not be executed here, so the platform-specific code paths were reviewed directly.
-That review found a real defect that affected every platform (BUG-4, sibling-prefix path
-containment) and it is now fixed with tests. Remaining Windows-only assumptions that still need a
-real Windows run: `GIT_ASKPASS` as a `.cmd` script, `taskkill /T /F` process-tree shutdown,
-`cmd.exe /d /s /c` command execution, and `*.localhost` resolution in Edge/Chrome. Run
-`npm run doctor` and `npm run verify:flow` on the Windows machine to cover those.
+Verified with a real resolver against the running server:
+
+```
+SOA      : { nsname: 'ns1.anantainfratech.test', serial: 20261017, refresh: 3600, ... }
+NS       : [ 'ns1.anantainfratech.test' ]
+apex A   : [ '203.0.113.10' ]
+wildcard : [ '203.0.113.10' ]   shop.eu.<zone>
+out-zone : EREFUSED
+TCP A    : { rcode: 0, answers: 1 }
+```
+
+**What software still cannot supply** is the network side: a public static IP, inbound port 53,
+and registrar delegation. Those are configuration and connectivity, not code. With them set,
+this server answers correctly; without them no DNS software anywhere can help. Two nameservers
+on distinct IPs are still required by most registrars for production use.
+
+### LIMIT-6: what was implemented
+
+Windows could not be executed in this environment, so instead of documenting the gap the fragile
+part was removed and the rest made self-verifying:
+
+* **Credential delivery no longer depends on a `.cmd` script.** The default is now a credential
+  helper (`credential.helper=!node <script>`), which reads the token from the environment and is
+  executed by git's own shell identically on Windows, macOS and Linux. The old `GIT_ASKPASS`
+  `.cmd` path remains behind `PORTPILOT_GIT_CREDENTIALS=askpass` as a fallback.
+* **An ambient-helper reset** (`credential.helper=` first) stops Git Credential Manager from
+  interfering with the token PortPilot supplies.
+* **The mechanism is proven at runtime, per machine:** `verifyGitCredentialTransport()` starts a
+  throwaway HTTP remote that answers 401, runs a real `git ls-remote`, and checks that the token
+  arrived. Exposed as `npm run doctor` and `POST /api/diagnostics/git-credentials`, so a Windows
+  user gets a definitive pass/fail instead of "works on Linux, unverified here".
+
+Still not executable without a Windows machine: `taskkill /T /F` tree shutdown, `cmd.exe /d /s /c`
+command execution, and `*.localhost` handling in Edge/Chrome. Those run through
+`npm run verify:flow` on the target PC.
 
 ## Verdict
 

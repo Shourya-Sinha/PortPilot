@@ -4,6 +4,7 @@ import { verifyGithubSignature, parsePushEvent } from '@portpilot/github';
 import { lookupViaDns } from '@portpilot/dns-server';
 import { runNetworkDiagnostics } from '@portpilot/network-diagnostics';
 import { verifyPublicDomain } from '@portpilot/public-access';
+import { verifyGitCredentialTransport } from '@portpilot/github';
 import { isPortFree } from '@portpilot/runtime-manager';
 import type { AppContext } from './context.js';
 import { syncDnsHostname, removeDnsHostname } from './dns-sync.js';
@@ -232,6 +233,17 @@ export function registerNetworkRoutes(app: FastifyInstance, ctx: AppContext): vo
 
     db.logActivity('public.verified', `Verified public domain ${domain}: ${result.verdict}`);
     return result;
+  });
+
+  /**
+   * Prove that git credentials work on THIS machine, whatever the platform.
+   * Runs a throwaway local remote that demands auth and reports whether the
+   * token actually arrived. Use this on Windows instead of trusting docs.
+   */
+  app.post('/api/diagnostics/git-credentials', async () => {
+    const result = await verifyGitCredentialTransport();
+    logger.info(`Git credential self-test: ${result.ok ? `OK via ${result.strategy}` : `FAILED (${result.detail})`}`);
+    return { ...result, platform: process.platform };
   });
 
   app.post('/api/public-access/relay/configure', async (req) => {
