@@ -142,3 +142,14 @@ Secrets are redacted before any log line is written. If you still find a leak, o
 * `scripts\uninstall.ps1 -PurgeData` removes runtime data after typed confirmation.
 * App source checkouts: `workspaces/`, built artifacts: `artifacts/` — both safe to delete;
   the next deploy recreates them.
+
+## Public domain
+
+**I bought a domain but the site still doesn't load**
+Run **Network → Verify a public domain**. It checks name → target → port → app and names the
+broken link. Most common causes: no DNS record yet, CGNAT (port forwarding impossible), or a
+record pointing at the wrong IP. See [public-domain.md](public-domain.md).
+
+**`x-portpilot-route` is missing from responses**
+The reverse proxy echoes the matched hostname so the verifier can prove a response came from
+PortPilot. If it is absent on a proxied response, you are talking to something else.
