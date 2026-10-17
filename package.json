@@ -22,6 +22,7 @@
     "start": "node scripts/start.mjs",
     "stop": "node scripts/stop.mjs",
     "test": "npm run build:server && vitest run",
+    "verify:flow": "node scripts/verify-browser-flow.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -b tsconfig.build.json --pretty",
     "clean": "node scripts/clean.mjs"

@@ -16,6 +16,29 @@ interface Strategy {
   id: string; name: string; description: string; viable: boolean; reason: string; guidance: string[];
 }
 
+interface DomainCheck {
+  domain: string;
+  verdict: 'works' | 'reachable_not_ours' | 'name_only' | 'not_reachable' | 'not_configured';
+  resolvedAddresses: string[];
+  cnameTarget: string | null;
+  links: {
+    name: { state: string; detail: string };
+    target: { state: string; detail: string };
+    port: { state: string; detail: string };
+    app: { state: string; detail: string };
+  };
+  possibleHairpinFalseNegative: boolean;
+  nextSteps: string[];
+}
+
+const VERDICT_LABEL: Record<DomainCheck['verdict'], { text: string; kind: 'info' | 'warn' | 'danger' }> = {
+  works: { text: 'Working end to end', kind: 'info' },
+  reachable_not_ours: { text: 'Reachable, but not served by PortPilot', kind: 'warn' },
+  name_only: { text: 'Name resolves, nothing answers', kind: 'warn' },
+  not_reachable: { text: 'Name resolves, nothing answers', kind: 'warn' },
+  not_configured: { text: 'No DNS record found', kind: 'danger' },
+};
+
 export default function Network() {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -25,6 +48,24 @@ export default function Network() {
   const [error, setError] = useState<string | null>(null);
   const [relayEndpoint, setRelayEndpoint] = useState('');
   const [relayMsg, setRelayMsg] = useState<string | null>(null);
+  const [domain, setDomain] = useState('');
+  const [domainCheck, setDomainCheck] = useState<DomainCheck | null>(null);
+  const [domainBusy, setDomainBusy] = useState(false);
+  const [domainError, setDomainError] = useState<string | null>(null);
+
+  const verifyDomain = async () => {
+    setDomainBusy(true);
+    setDomainError(null);
+    setDomainCheck(null);
+    try {
+      const res = await api<DomainCheck>('/api/public-access/verify', { method: 'POST', body: { domain } });
+      setDomainCheck(res);
+    } catch (e) {
+      setDomainError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDomainBusy(false);
+    }
+  };
 
   const load = async () => {
     setBusy(true);
@@ -152,6 +193,47 @@ export default function Network() {
             ) : null}
           </div>
         ))}
+      </div>
+
+      <div className="card mt">
+        <h3>Verify a public domain</h3>
+        <p className="muted">
+          Bought or pointed a domain at this PC? Check the whole chain: name → target → port → app.
+          A DNS lookup alone does not prove the site works.
+        </p>
+        <div className="row mb">
+          <input
+            className="input"
+            value={domain}
+            onChange={(e) => setDomain(e.target.value)}
+            placeholder="app.yourdomain.com"
+          />
+          <button className="btn btn-primary" disabled={domainBusy || domain.trim().length < 3} onClick={verifyDomain}>
+            {domainBusy ? 'Checking…' : 'Verify'}
+          </button>
+        </div>
+        {domainError ? <Notice kind="danger">{domainError}</Notice> : null}
+        {domainCheck ? (
+          <div className="mt">
+            <Notice kind={VERDICT_LABEL[domainCheck.verdict].kind}>
+              <b>{VERDICT_LABEL[domainCheck.verdict].text}</b> — {domainCheck.domain}
+            </Notice>
+            <ul className="check-list">
+              <li>{domainCheck.links.name.state === 'ok' ? '✓' : '✗'} <b>Name:</b> {domainCheck.links.name.detail}</li>
+              <li>{domainCheck.links.target.state === 'ok' ? '✓' : '•'} <b>Target:</b> {domainCheck.links.target.detail}</li>
+              <li>{domainCheck.links.port.state === 'ok' ? '✓' : '✗'} <b>Port:</b> {domainCheck.links.port.detail}</li>
+              <li>{domainCheck.links.app.state === 'ok' ? '✓' : '✗'} <b>App:</b> {domainCheck.links.app.detail}</li>
+            </ul>
+            {domainCheck.possibleHairpinFalseNegative ? (
+              <div className="notice notice-warn">
+                This PC cannot reach its own public IP (NAT hairpin). It may still work from outside — test from a phone on mobile data.
+              </div>
+            ) : null}
+            <ul className="check-list mt">
+              {domainCheck.nextSteps.map((s, i) => <li key={i}>→ {s}</li>)}
+            </ul>
+          </div>
+        ) : null}
       </div>
 
       <Notice kind="warn">

@@ -3,8 +3,11 @@ import { ConflictError, NotFoundError, ValidationError, nowIso, validateHostname
 import { verifyGithubSignature, parsePushEvent } from '@portpilot/github';
 import { lookupViaDns } from '@portpilot/dns-server';
 import { runNetworkDiagnostics } from '@portpilot/network-diagnostics';
+import { verifyPublicDomain } from '@portpilot/public-access';
+import { verifyGitCredentialTransport } from '@portpilot/github';
 import { isPortFree } from '@portpilot/runtime-manager';
 import type { AppContext } from './context.js';
+import { syncDnsHostname, removeDnsHostname } from './dns-sync.js';
 
 const DIAG_CACHE_MS = 60_000;
 
@@ -37,6 +40,7 @@ export function registerNetworkRoutes(app: FastifyInstance, ctx: AppContext): vo
       mode: (body.mode as never) ?? 'local',
       publicHostname: body.publicHostname ?? null,
     });
+    syncDnsHostname(ctx.dns, cfg, rec.hostname);
     return reply.code(201).send({ hostname: rec });
   });
 
@@ -47,17 +51,22 @@ export function registerNetworkRoutes(app: FastifyInstance, ctx: AppContext): vo
       const v = validateHostname(String(body.hostname));
       if (!v.ok) throw new ValidationError(v.error!);
     }
+    const before = db.getHostname(id);
     const rec = hostnames.updateHostname(id, {
       hostname: body.hostname ? String(body.hostname).toLowerCase() : undefined,
       mode: body.mode as never,
       publicHostname: body.publicHostname,
     });
+    if (before && before.hostname !== rec.hostname) removeDnsHostname(ctx.dns, cfg, before.hostname);
+    syncDnsHostname(ctx.dns, cfg, rec.hostname);
     return { hostname: rec };
   });
 
   app.delete('/api/hostnames/:id', async (req) => {
     const { id } = req.params as { id: string };
+    const rec = db.getHostname(id);
     hostnames.removeHostname(id);
+    if (rec) removeDnsHostname(ctx.dns, cfg, rec.hostname);
     return { ok: true };
   });
 
@@ -183,6 +192,58 @@ export function registerNetworkRoutes(app: FastifyInstance, ctx: AppContext): vo
         'Public URLs are shown only after a valid hostname and network configuration have been verified externally.',
       ],
     };
+  });
+
+  /**
+   * Verify a purchased public domain end-to-end (name -> target -> port -> app).
+   * This is the check that answers "if I buy a domain, will it actually work?".
+   */
+  app.post('/api/public-access/verify', async (req) => {
+    const body = (req.body ?? {}) as { domain?: string; projectId?: string };
+    const domain = String(body.domain ?? '').trim();
+    if (!domain) throw new ValidationError('A domain is required.');
+
+    let diag = ctx.diagCache?.data ?? null;
+    if (!diag) {
+      diag = await runNetworkDiagnostics({ publicIpCheckUrl: cfg.publicIpCheckUrl, publicHostnameConfigured: true });
+      ctx.diagCache = { at: Date.now(), data: diag };
+    }
+
+    const result = await verifyPublicDomain(domain, {
+      expectedPublicIp: diag.publicIp,
+      localProxyPort: cfg.proxyPort,
+    });
+
+    // Persist external reachability on the matching hostname, if one exists,
+    // so the UI stops showing 'not_checked' forever.
+    const record = db.getHostnameByName(domain) ?? db.listHostnames().find((h) => h.publicHostname === domain);
+    if (record) {
+      db.updateHostname(record.id, {
+        mode: 'public',
+        publicHostname: domain,
+        resolutionStatus: result.resolves ? 'resolvable_public' : 'unresolvable',
+        reachabilityStatus: result.servedByPortPilot ? 'reachable_external' : 'unreachable_external',
+      });
+    }
+
+    if (body.projectId) {
+      const project = db.getProject(body.projectId);
+      if (project) db.updateProject(project.id, { publicHostname: domain, hostnameMode: 'public' });
+    }
+
+    db.logActivity('public.verified', `Verified public domain ${domain}: ${result.verdict}`);
+    return result;
+  });
+
+  /**
+   * Prove that git credentials work on THIS machine, whatever the platform.
+   * Runs a throwaway local remote that demands auth and reports whether the
+   * token actually arrived. Use this on Windows instead of trusting docs.
+   */
+  app.post('/api/diagnostics/git-credentials', async () => {
+    const result = await verifyGitCredentialTransport();
+    logger.info(`Git credential self-test: ${result.ok ? `OK via ${result.strategy}` : `FAILED (${result.detail})`}`);
+    return { ...result, platform: process.platform };
   });
 
   app.post('/api/public-access/relay/configure', async (req) => {

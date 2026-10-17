@@ -12,7 +12,7 @@ import {
   type Project,
 } from '@portpilot/shared';
 import type { PortPilotDb } from '@portpilot/database';
-import { runBuildPipeline } from '@portpilot/build-engine';
+import { runBuildPipeline, isSpaFramework } from '@portpilot/build-engine';
 import { RuntimeSupervisor, isPidAlive } from '@portpilot/runtime-manager';
 import type { HostnameManager } from '@portpilot/hostname-manager';
 
@@ -140,7 +140,7 @@ export class DeployQueue {
 
     const sourceDir = path.join(paths.workspacesDir, sanitize(project.websiteName), 'src');
     const artifactDir = path.join(paths.artifactsDir, sanitize(project.websiteName), req.deploymentId);
-    const gitToken = project.githubTokenRef ? this.db.getSecret(project.githubTokenRef) : process.env.PORTPILOT_GITHUB_TOKEN ?? null;
+    const gitToken = this.db.resolveGithubToken(project.githubTokenRef);
     const envVars = this.db.getEnvPlain(project.id);
 
     let phase: DeploymentPhase = 'checkout';
@@ -225,6 +225,7 @@ export class DeployQueue {
         preferredPort: req.config.preferredPort ?? project.preferredPort,
         env: envVars,
         healthCheckPath: req.config.healthCheckPath,
+        spa: isSpaFramework(req.config.framework),
         logFile,
         onLog: (line) => this.logLine(req.deploymentId, project.id, line),
       });

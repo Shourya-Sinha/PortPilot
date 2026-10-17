@@ -1,5 +1,8 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { getPaths } from '@portpilot/shared';
 
 /**
  * Session auth for the dashboard.
@@ -19,15 +22,74 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 
+/**
+ * Sessions are persisted to <dataDir>/sessions.json so restarting PortPilot
+ * (or letting autostart bring apps back up) does not log you out of the
+ * dashboard. The file holds only random session ids and CSRF tokens, with the
+ * same 12-hour expiry; it is written with mode 0600 and best-effort.
+ */
+function sessionsFile(): string | null {
+  try {
+    return path.join(getPaths().dataDir, 'sessions.json');
+  } catch {
+    return null;
+  }
+}
+
+function loadSessions(): void {
+  const file = sessionsFile();
+  if (!file || !fs.existsSync(file)) return;
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, Session>;
+    const now = Date.now();
+    for (const [sid, s] of Object.entries(raw)) {
+      if (s && typeof s.csrf === 'string' && typeof s.expiresAt === 'number' && s.expiresAt > now) {
+        sessions.set(sid, s);
+      }
+    }
+  } catch {
+    /* corrupt or unreadable: start clean */
+  }
+}
+
+let saveTimer: NodeJS.Timeout | null = null;
+function saveSessions(): void {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    const file = sessionsFile();
+    if (!file) return;
+    try {
+      const now = Date.now();
+      const plain: Record<string, Session> = {};
+      for (const [sid, s] of sessions) {
+        if (s.expiresAt > now) plain[sid] = s;
+        else sessions.delete(sid);
+      }
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(plain), { mode: 0o600 });
+      fs.renameSync(tmp, file);
+    } catch {
+      /* persistence is best-effort; in-memory sessions still work */
+    }
+  }, 250);
+  saveTimer.unref?.();
+}
+
+loadSessions();
+
 export function createSession(): { cookie: string; csrf: string } {
   const sid = crypto.randomBytes(32).toString('hex');
   const csrf = crypto.randomBytes(24).toString('hex');
   sessions.set(sid, { csrf, expiresAt: Date.now() + SESSION_TTL_MS });
+  saveSessions();
   return { cookie: sid, csrf };
 }
 
 export function destroySession(sid: string): void {
   sessions.delete(sid);
+  saveSessions();
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {
@@ -98,18 +160,25 @@ export function authGuard(req: FastifyRequest, reply: FastifyReply, authToken: s
   return true;
 }
 
+/**
+ * IMPORTANT: each cookie must be sent as its OWN `Set-Cookie` header.
+ *
+ * `Set-Cookie` is exempt from the usual comma-folding rule (RFC 6265bis §5.2,
+ * fetch spec "set-cookie" handling): browsers do NOT split it on commas. Sending
+ * `pp_session=...; Path=/, pp_csrf=...; Path=/` as one header makes the browser
+ * store a single `pp_session` cookie and treat `pp_csrf` as an unknown attribute
+ * of it — so `document.cookie` never contains `pp_csrf`, the dashboard sends an
+ * empty `x-csrf-token`, and every POST/PATCH/DELETE fails with
+ * `403 {"code":"csrf_failed"}`. Always pass an array, never a joined string.
+ */
 export function setSessionCookies(reply: FastifyReply, sid: string, csrf: string, secure: boolean): void {
-  reply.header(
-    'set-cookie',
-    [
-      `pp_session=${sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`,
-      `pp_csrf=${csrf}; Path=/; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`,
-    ].join(', '),
-  );
+  const maxAge = Math.floor(SESSION_TTL_MS / 1000);
+  const attrs = `Path=/; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+  reply.header('set-cookie', [`pp_session=${sid}; HttpOnly; ${attrs}`, `pp_csrf=${csrf}; ${attrs}`]);
 }
 
 export function clearSessionCookies(reply: FastifyReply): void {
-  reply.header('set-cookie', ['pp_session=; Path=/; HttpOnly; Max-Age=0', 'pp_csrf=; Path=/; Max-Age=0'].join(', '));
+  reply.header('set-cookie', ['pp_session=; Path=/; HttpOnly; Max-Age=0', 'pp_csrf=; Path=/; Max-Age=0']);
 }
 
 /**

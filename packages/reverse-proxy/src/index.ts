@@ -127,6 +127,10 @@ Registered routes (${routes.length}):</p>
         timeout: 30_000,
       },
       (upRes) => {
+        // Echo the matched route back to the client as well: it lets the public
+        // domain verifier confirm the response actually came from this proxy
+        // rather than from some other server the DNS record happens to point at.
+        res.setHeader('x-portpilot-route', route.hostname);
         res.writeHead(upRes.statusCode ?? 502, upRes.headers as http.OutgoingHttpHeaders);
         upRes.pipe(res);
       },

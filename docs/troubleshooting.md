@@ -28,9 +28,39 @@ Use the token printed at startup (also in `data/.session-token`). If lost, delet
 `data/.session-token` and restart — a new one is generated. For LAN exposure set
 `PORTPILOT_AUTH_TOKEN` in `.env` explicitly.
 
-**403 CSRF errors from scripts**
-Mutating calls need the `pp_csrf` cookie value in the `x-csrf-token` header. Use the dashboard
-or replicate the login + cookie flow.
+**`403 {"error":"CSRF token missing or invalid","code":"csrf_failed"}`**
+The dashboard gets the CSRF token from the API and never asks you to type it. Concretely:
+
+| | |
+|---|---|
+| **Where it comes from** | `POST /api/auth/login` returns it as the `csrf` field of the JSON body, and the same value is set as the `pp_csrf` cookie. `GET /api/auth/me` re-returns it for an existing session. |
+| **Where it goes** | The `x-csrf-token` request header, on every `POST`/`PATCH`/`DELETE`. `GET` requests do not need it. |
+| **What it is not** | Not the access token from `data/.session-token` — that one is only for logging in. |
+
+The browser dashboard does this automatically (`apps/dashboard/src/api.ts`). You only need the
+token by hand when calling the API from `curl`/a script:
+
+```bash
+TOKEN=$(cat data/.session-token)
+# login, keeping cookies and reading the csrf value out of the response
+CSRF=$(curl -s -c jar.txt -X POST http://127.0.0.1:4300/api/auth/login \
+  -H 'content-type: application/json' -d "{\"token\":\"$TOKEN\"}" \
+  | python -c 'import sys,json;print(json.load(sys.stdin)["csrf"])')
+# reuse the session cookie + csrf header for every mutation
+curl -b jar.txt -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+  -X POST http://127.0.0.1:4300/api/projects -d '{...}'
+```
+
+If the dashboard itself reports this error, your browser never received the `pp_csrf` cookie —
+almost always a stale build before this was fixed (two cookies were once folded into a single
+`Set-Cookie` header, which browsers do not split). Rebuild (`npm run build`) and hard-refresh
+(`Ctrl`+`Shift`+`R`) to drop the old cookies. `npm run verify:flow` re-checks the whole
+login → GitHub → deploy path.
+
+**Sign out appears to work but you are still logged in**
+Fixed: the dashboard sent `content-type: application/json` with an empty body on
+`/api/auth/logout`, which Fastify rejects with a 400 before the handler runs, so the session was
+never destroyed. Rebuild the dashboard if you are on an older build.
 
 ## Deployments
 
@@ -112,3 +142,14 @@ Secrets are redacted before any log line is written. If you still find a leak, o
 * `scripts\uninstall.ps1 -PurgeData` removes runtime data after typed confirmation.
 * App source checkouts: `workspaces/`, built artifacts: `artifacts/` — both safe to delete;
   the next deploy recreates them.
+
+## Public domain
+
+**I bought a domain but the site still doesn't load**
+Run **Network → Verify a public domain**. It checks name → target → port → app and names the
+broken link. Most common causes: no DNS record yet, CGNAT (port forwarding impossible), or a
+record pointing at the wrong IP. See [public-domain.md](public-domain.md).
+
+**`x-portpilot-route` is missing from responses**
+The reverse proxy echoes the matched hostname so the verifier can prove a response came from
+PortPilot. If it is absent on a proxied response, you are talking to something else.

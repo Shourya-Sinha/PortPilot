@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { api, me } from '../api';
+import { api, logout, me } from '../api';
 
 const NAV: { section: string; items: { to: string; label: string; icon: string }[] }[] = [
   {
@@ -96,7 +96,7 @@ export default function Layout() {
             <button
               className="btn btn-sm"
               onClick={async () => {
-                await api('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+                await logout().catch(() => undefined);
                 me().then(() => navigate('/login'));
               }}
             >

@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { redactSecrets, validateRepoUrl, type ValidationResult } from '@portpilot/shared';
+import { cleanupCredentialFiles, createCredentialFiles, type CredentialStrategy } from './credentials.js';
 
 export interface GitResult {
   ok: boolean;
@@ -20,33 +20,37 @@ export interface GitOptions {
 const IS_WIN = process.platform === 'win32';
 
 /**
+ * Credential strategy to use. The credential helper is the cross-platform
+ * default; `PORTPILOT_GIT_CREDENTIALS=askpass` forces the legacy path, which is
+ * useful if a corporate git build rejects `credential.helper=!command`.
+ */
+function preferredStrategy(): CredentialStrategy {
+  return (process.env.PORTPILOT_GIT_CREDENTIALS ?? '').toLowerCase() === 'askpass' ? 'askpass' : 'helper';
+}
+
+/**
  * Runs the Git CLI with argument arrays (never a concatenated shell string).
- * When a token is supplied it is passed to git through GIT_ASKPASS so it never
- * appears in argv, in the remote URL, or in logs.
+ * When a token is supplied it is handed to git through a credential helper (or
+ * GIT_ASKPASS when configured) so it never appears in argv, in the remote URL,
+ * or in logs.
  */
 export async function runGit(args: string[], opts: GitOptions = {}): Promise<GitResult> {
   const timeout = opts.timeoutMs ?? 120_000;
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  let askpassFile: string | null = null;
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  let creds: ReturnType<typeof createCredentialFiles> | null = null;
+  let configArgs: string[] = ['-c', 'core.longpaths=true'];
 
   if (opts.token) {
-    askpassFile = path.join(os.tmpdir(), `portpilot-askpass-${process.pid}-${Date.now()}${IS_WIN ? '.cmd' : '.sh'}`);
-    const script = IS_WIN
-      ? `@echo off\r\necho %PORTPILOT_GIT_TOKEN%\r\n`
-      : `#!/bin/sh\necho "$PORTPILOT_GIT_TOKEN"\n`;
-    fs.writeFileSync(askpassFile, script, { mode: 0o700 });
-    env.GIT_ASKPASS = askpassFile;
-    env.PORTPILOT_GIT_TOKEN = opts.token;
-    env.GIT_TERMINAL_PROMPT = '0';
-  } else {
-    env.GIT_TERMINAL_PROMPT = '0';
+    creds = createCredentialFiles(opts.token, preferredStrategy());
+    Object.assign(env, creds.env);
+    configArgs = [...creds.config, ...configArgs];
   }
 
   try {
     return await new Promise<GitResult>((resolve) => {
       execFile(
         'git',
-        ['-c', 'core.longpaths=true', ...args],
+        [...configArgs, ...args],
         {
           cwd: opts.cwd,
           env,
@@ -66,13 +70,7 @@ export async function runGit(args: string[], opts: GitOptions = {}): Promise<Git
       );
     });
   } finally {
-    if (askpassFile) {
-      try {
-        fs.unlinkSync(askpassFile);
-      } catch {
-        /* ignore */
-      }
-    }
+    if (creds) cleanupCredentialFiles(creds);
   }
 }
 
@@ -110,10 +108,20 @@ export async function cloneOrPull(repoUrl: string, branch: string, targetDir: st
     const co = await runGit(['checkout', '-B', branch, `origin/${branch}`], { cwd: targetDir, token });
     if (!co.ok) return co;
     const reset = await runGit(['reset', '--hard', `origin/${branch}`], { cwd: targetDir, token });
+    if (!reset.ok) return attachHead(reset, targetDir);
+    // Keep submodules in sync when the repository uses them. Failure here is
+    // reported but does not fail the build: many repos inherit a .gitmodules
+    // whose submodules are optional in a production build.
+    await runGit(['submodule', 'update', '--init', '--recursive'], { cwd: targetDir, token, timeoutMs: 120_000 });
     return attachHead(reset, targetDir);
   }
   fs.mkdirSync(targetDir, { recursive: true });
-  const clone = await runGit(['clone', '--depth', '50', '--branch', branch, '--single-branch', repoUrl, targetDir], { token, timeoutMs: 300_000 });
+  // --recurse-submodules pulls submodule content; Git LFS objects are fetched
+  // automatically by git when git-lfs is installed for the user.
+  const clone = await runGit(
+    ['clone', '--depth', '50', '--branch', branch, '--single-branch', '--recurse-submodules', repoUrl, targetDir],
+    { token, timeoutMs: 300_000 },
+  );
   return attachHead(clone, targetDir);
 }
 

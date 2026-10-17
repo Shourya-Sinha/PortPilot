@@ -98,6 +98,33 @@ describe('API authentication', () => {
     csrf = (res.json() as { csrf: string }).csrf;
   });
 
+  // Regression: a browser does NOT split Set-Cookie on commas (RFC 6265bis §5.2).
+  // If both cookies are folded into one header, `pp_csrf` is silently dropped,
+  // document.cookie has no token, and every mutation 403s with csrf_failed.
+  it('sends pp_session and pp_csrf as two separate Set-Cookie headers', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { token: TEST_TOKEN } });
+    const raw = res.headers['set-cookie'];
+    const list = Array.isArray(raw) ? raw : [String(raw ?? '')];
+    expect(list).toHaveLength(2);
+    for (const c of list) expect(c).not.toContain(',');
+    expect(list.some((c) => c.startsWith('pp_session='))).toBe(true);
+    expect(list.some((c) => c.startsWith('pp_csrf='))).toBe(true);
+    // The JS-readable half must not be HttpOnly, or the dashboard cannot read it.
+    expect(list.find((c) => c.startsWith('pp_csrf='))).not.toContain('HttpOnly');
+    expect(list.find((c) => c.startsWith('pp_session='))).toContain('HttpOnly');
+  });
+
+  it('rejects a mutation sent without the CSRF token', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      headers: { cookie, 'x-csrf-token': '' },
+      payload: { name: 'nope', websiteName: 'nope', repoUrl: 'https://github.com/octocat/Hello-World.git', branch: 'master' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect((res.json() as { code?: string }).code).toBe('csrf_failed');
+  });
+
   it('rejects unauthenticated API calls', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/projects' });
     expect(res.statusCode).toBe(401);

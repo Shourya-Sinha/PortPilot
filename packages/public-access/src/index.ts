@@ -128,3 +128,5 @@ export class PublicAccessManager {
     return 'relay_required';
   }
 }
+
+export * from './verify.js';

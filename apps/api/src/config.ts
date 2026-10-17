@@ -34,6 +34,16 @@ export interface AppConfig {
   authToken: string;
   isLoopback: boolean;
   root: string;
+  /** Restart applications that were running before a PortPilot restart. */
+  autostart?: boolean;
+  /** GitHub polling interval in ms (0 disables the poller). */
+  pollIntervalMs?: number;
+  /** Primary nameserver name published in SOA/NS (enables authoritative mode). */
+  dnsNsName?: string | null;
+  /** Public IP published for the zone apex and wildcard. */
+  dnsPublicIp?: string | null;
+  /** Listen on TCP as well (required for public authoritative DNS). */
+  dnsTcp?: boolean;
 }
 
 export function loadConfig(): AppConfig {
@@ -78,6 +88,11 @@ export function loadConfig(): AppConfig {
     authToken,
     isLoopback,
     root: paths.root,
+    autostart: (process.env.AUTOSTART ?? 'true').toLowerCase() !== 'false',
+    pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 300_000),
+    dnsNsName: process.env.DNS_NS_NAME?.trim() || null,
+    dnsPublicIp: process.env.DNS_PUBLIC_IP?.trim() || null,
+    dnsTcp: (process.env.DNS_TCP ?? 'false').toLowerCase() === 'true',
   };
 }
 

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { AppError, redactSecrets } from '@portpilot/shared';
+import { AppError, isPathInside, redactSecrets } from '@portpilot/shared';
 import { RateLimiter } from './auth.js';
 import { registerCoreRoutes } from './routes-core.js';
 import { registerProjectRoutes } from './routes-projects.js';
@@ -100,7 +100,7 @@ function serveStatic(root: string, url: string, reply: { code: (n: number) => { 
   let rel = decodeURIComponent((url ?? '/').split('?')[0]);
   if (rel.endsWith('/')) rel += 'index.html';
   const filePath = path.resolve(root, '.' + rel);
-  if (!filePath.startsWith(path.resolve(root))) {
+  if (!isPathInside(path.resolve(root), filePath)) {
     return res.code(403).send('Forbidden');
   }
   let serve = filePath;

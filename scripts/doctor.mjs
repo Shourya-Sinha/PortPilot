@@ -57,6 +57,21 @@ async function main() {
   const git = spawnSync('git', ['--version'], { encoding: 'utf8', shell: isWin });
   check('Git available', git.status === 0, (git.stdout ?? git.stderr ?? '').trim());
 
+  // Prove credentials reach the remote on THIS machine. This is the check that
+  // used to be "looks fine on Linux, unverified on Windows": it now runs the
+  // real credential path against a throwaway auth-demanding remote.
+  if (git.status === 0 && fs.existsSync(path.join(root, 'packages/github/dist/credentials.js'))) {
+    try {
+      const { verifyGitCredentialTransport } = await import(
+        path.join(root, 'packages/github/dist/credentials.js')
+      );
+      const res = await verifyGitCredentialTransport();
+      check('Git credential delivery', res.ok, res.ok ? `token reached the remote via ${res.strategy}` : res.detail);
+    } catch (err) {
+      check('Git credential delivery', false, String(err && err.message ? err.message : err));
+    }
+  }
+
   console.log('\nFiles & data');
   check('node_modules present', fs.existsSync(path.join(root, 'node_modules')));
   check('Server build present', fs.existsSync(path.join(root, 'apps/api/dist/index.js')), 'run "npm run build" if missing');

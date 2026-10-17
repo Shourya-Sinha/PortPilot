@@ -65,3 +65,21 @@ export function ensureDirs(paths: PortPilotPaths = getPaths()): void {
     fs.mkdirSync(dir, { recursive: true });
   }
 }
+
+/**
+ * True when `candidate` is the same as `root` or lives inside it.
+ *
+ * A plain `startsWith(root)` check is wrong in two ways:
+ *   - it accepts siblings that merely share a prefix (`/app/dist-evil` when the
+ *     root is `/app/dist`), which is a path-traversal hole;
+ *   - Windows paths are case-insensitive and may use short (8.3) names, so an
+ *     exact-string comparison rejects valid paths.
+ */
+export function isPathInside(root: string, candidate: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(candidate));
+  if (rel === '') return true;
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return false;
+  // On Windows, `path.relative` is already case-insensitive, so this also
+  // covers different casing of the same directory.
+  return true;
+}

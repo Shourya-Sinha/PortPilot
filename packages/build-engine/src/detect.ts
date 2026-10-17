@@ -197,3 +197,12 @@ export function detectProject(projectRootDir: string): DetectedConfig {
     notes,
   };
 }
+
+/**
+ * Frameworks that use client-side routing and therefore need a static server
+ * that falls back to index.html for unknown paths. Plain static sites and
+ * server-rendered frameworks do not.
+ */
+export function isSpaFramework(framework: string | null | undefined): boolean {
+  return framework === 'react' || framework === 'vite';
+}
