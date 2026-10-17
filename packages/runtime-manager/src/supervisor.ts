@@ -31,6 +31,12 @@ export interface StartAppOptions {
   preferredPort?: number | null;
   env?: Record<string, string>;
   healthCheckPath?: string | null;
+  /**
+   * Static mode only: fall back to index.html for unknown paths (client-side
+   * routing). Enable for SPAs (React/Vue/Angular). Leave off for plain static
+   * sites, otherwise a missing asset returns 200 + HTML instead of a 404.
+   */
+  spa?: boolean;
   logFile: string;
   onLog?: (line: LogLine) => void;
 }
@@ -56,10 +62,21 @@ export class RuntimeSupervisor {
   }
 
   /** Restore in-memory state after a platform restart; checks whether the PID is still alive. */
-  restoreFromState(projectId: string, state: { deploymentId: string | null; pid: number | null; port: number | null; cwd: string | null; startedAt: string | null }): ManagedProcess {
+  restoreFromState(
+    projectId: string,
+    state: { deploymentId: string | null; pid: number | null; port: number | null; cwd: string | null; startedAt: string | null; status?: RuntimeStatus | null },
+  ): ManagedProcess {
+    // A static deployment has no pid at all, so "was it supposed to be up?"
+    // cannot be inferred from the pid alone. The stored status is the intent.
+    const wasUp =
+      state.status === 'running' ||
+      state.status === 'starting' ||
+      state.status === 'crashed' ||
+      // Legacy callers pass no status: a pid means it was expected to be up.
+      (state.status == null && state.pid != null);
     let status: RuntimeStatus = 'stopped';
     if (state.pid != null && isPidAlive(state.pid)) status = 'running';
-    else if (state.pid != null) status = 'crashed';
+    else if (wasUp) status = 'crashed';
     const proc: ManagedProcess = {
       projectId,
       deploymentId: state.deploymentId ?? '',
@@ -137,7 +154,7 @@ export class RuntimeSupervisor {
 
     try {
       if (opts.mode === 'static') {
-        const server = createStaticServer(opts.runDir, { spa: true });
+        const server = createStaticServer(opts.runDir, { spa: opts.spa === true });
         await listenServer(server, port, '127.0.0.1');
         record.staticServer = server;
         record.status = 'running';

@@ -22,6 +22,8 @@ import {
 } from '@portpilot/shared';
 import { detectProject } from '@portpilot/build-engine';
 import { runGit, validateGitRepoUrl, listRemoteBranches, generateWebhookSecret, getHeadCommit } from '@portpilot/github';
+import { syncDnsHostname, removeDnsHostname } from './dns-sync.js';
+import { startProjectFromDeployment } from './start-project.js';
 import { isPidAlive } from '@portpilot/runtime-manager';
 import type { AppContext } from './context.js';
 
@@ -127,7 +129,8 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
       webhookSecret: generateWebhookSecret(),
     });
 
-    hostnames.registerLocalHostname(project.id, websiteName);
+    const registered = hostnames.registerLocalHostname(project.id, websiteName);
+    syncDnsHostname(ctx.dns, ctx.cfg, registered.hostname);
     const act = db.logActivity('project.created', `Project "${name}" created with website name "${websiteName}"`, project.id);
     ctx.logger.info(`Project ${project.id} created (${websiteName}.localhost)`);
     return reply.code(201).send({ project: { ...project, webhookSecret: '***' }, localUrl: `http://${hostname}${ctx.cfg.proxyPort === 80 ? '' : `:${ctx.cfg.proxyPort}`}` });
@@ -177,7 +180,10 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
       publicHostname: body.publicHostname,
     });
     if (body.websiteName) {
-      hostnames.registerLocalHostname(id, String(body.websiteName).toLowerCase());
+      const before = db.getHostnameByName(`${existing.websiteName.toLowerCase()}.localhost`);
+      const registered = hostnames.registerLocalHostname(id, String(body.websiteName).toLowerCase());
+      if (before && before.hostname !== registered.hostname) removeDnsHostname(ctx.dns, ctx.cfg, before.hostname);
+      syncDnsHostname(ctx.dns, ctx.cfg, registered.hostname);
     }
     return { project: updated ? { ...updated, webhookSecret: updated.webhookSecret ? '***' : null } : null };
   });
@@ -192,7 +198,10 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
       throw new ValidationError('Destructive operation: send { "confirm": "<website-name>" } to delete this project and its deployments.');
     }
     await supervisor.stop(id).catch(() => undefined);
-    for (const h of db.listHostnames(id)) db.deleteHostname(h.id);
+    for (const h of db.listHostnames(id)) {
+      removeDnsHostname(ctx.dns, ctx.cfg, h.hostname);
+      db.deleteHostname(h.id);
+    }
     db.deleteProject(id);
     db.logActivity('project.deleted', `Project "${project.name}" deleted`, id);
     return { ok: true };
@@ -205,7 +214,7 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     if (!project) throw new NotFoundError('Project not found');
     const paths = getPaths();
     const sourceDir = path.join(paths.workspacesDir, project.websiteName.replace(/[^A-Za-z0-9._-]/g, '_'), 'src');
-    const token = project.githubTokenRef ? db.getSecret(project.githubTokenRef) : process.env.PORTPILOT_GITHUB_TOKEN ?? null;
+    const token = db.resolveGithubToken(project.githubTokenRef);
     const co = await runGit(['clone', '--depth', '1', '--branch', project.branch, project.repoUrl, sourceDir], {
       token,
       timeoutMs: 180_000,
@@ -237,7 +246,7 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
       if (fs.existsSync(projDir)) {
         detected = detectProject(projDir);
       } else {
-        const token = project.githubTokenRef ? db.getSecret(project.githubTokenRef) : process.env.PORTPILOT_GITHUB_TOKEN ?? null;
+        const token = db.resolveGithubToken(project.githubTokenRef);
         const co = await runGit(['clone', '--depth', '1', '--branch', project.branch, project.repoUrl, sourceDir], { token, timeoutMs: 180_000 });
         const pd = path.resolve(sourceDir, project.projectRoot || '.');
         if (fs.existsSync(pd)) detected = detectProject(pd);
@@ -312,7 +321,7 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     // Manual Pull and Redeploy (works without inbound webhooks).
     const paths = getPaths();
     const sourceDir = path.join(paths.workspacesDir, project.websiteName.replace(/[^A-Za-z0-9._-]/g, '_'), 'src');
-    const token = project.githubTokenRef ? db.getSecret(project.githubTokenRef) : process.env.PORTPILOT_GITHUB_TOKEN ?? null;
+    const token = db.resolveGithubToken(project.githubTokenRef);
     if (fs.existsSync(path.join(sourceDir, '.git'))) {
       const pull = await runGit(['fetch', '--depth', '50', 'origin', project.branch], { cwd: sourceDir, token });
       if (!pull.ok) logger.warn(`fetch failed for ${project.name}: ${pull.stderr.split('\n')[0]}`);
@@ -353,26 +362,9 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     const { id } = req.params as { id: string };
     const project = db.getProject(id);
     if (!project) throw new NotFoundError('Project not found');
-    const dep = project.activeDeploymentId ? db.getDeployment(project.activeDeploymentId) : db.listDeployments({ projectId: id }).find((d) => d.status === 'succeeded');
-    if (!dep || dep.status !== 'succeeded' || !dep.artifactPath) throw new ValidationError('No successful deployment to start. Deploy first.');
-    const paths = getPaths();
-    const mode = project.deploymentMode === 'static' ? 'static' : 'node';
-    const runDir = mode === 'static' ? dep.artifactPath : (dep.workspacePath ?? dep.artifactPath);
-    const logFile = path.join(paths.runtimeLogDir, `${project.websiteName.replace(/[^A-Za-z0-9._-]/g, '_')}.log`);
-    const proc = await supervisor.start({
-      projectId: id,
-      deploymentId: dep.id,
-      mode,
-      runDir,
-      startCommand: project.startCommand,
-      preferredPort: project.preferredPort ?? dep.port,
-      env: db.getEnvPlain(id),
-      healthCheckPath: project.healthCheckPath,
-      logFile,
-    });
-    db.setRuntime({ projectId: id, deploymentId: dep.id, status: 'running', pid: proc.pid, port: proc.port, cwd: runDir, startedAt: nowIso() });
-    hostnames.syncRoute(id, proc.port ?? 0);
-    return { ok: true, port: proc.port, pid: proc.pid };
+    const res = await startProjectFromDeployment(db, supervisor, hostnames, id);
+    if (!res.ok) throw new ValidationError(res.error ?? 'Could not start the application.');
+    return { ok: true, port: res.port, pid: res.pid };
   });
 
   app.post('/api/projects/:id/stop', async (req) => {
@@ -510,7 +502,9 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     const url = String(q.url ?? '');
     const v = validateGitRepoUrl(url);
     if (!v.ok) throw new ValidationError(v.error!);
-    const token = process.env.PORTPILOT_GITHUB_TOKEN ?? null;
+    // Use the same resolver as deploys so branch listing works for private
+    // repos once a token has been saved in the dashboard.
+    const token = db.resolveGithubToken(null);
     const res = await listRemoteBranches(url, token);
     return res;
   });
@@ -530,8 +524,8 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
   });
 
   app.get('/api/github/token-status', async () => {
-    const ref = db.getSetting('github_token_ref');
-    return { configured: Boolean(ref && db.getSecret(ref)) || Boolean(process.env.PORTPILOT_GITHUB_TOKEN), source: ref ? 'database' : process.env.PORTPILOT_GITHUB_TOKEN ? 'env' : 'none' };
+    const source = db.githubTokenSource();
+    return { configured: source !== 'none', source };
   });
 
   app.delete('/api/github/token', async () => {

@@ -110,10 +110,20 @@ export async function cloneOrPull(repoUrl: string, branch: string, targetDir: st
     const co = await runGit(['checkout', '-B', branch, `origin/${branch}`], { cwd: targetDir, token });
     if (!co.ok) return co;
     const reset = await runGit(['reset', '--hard', `origin/${branch}`], { cwd: targetDir, token });
+    if (!reset.ok) return attachHead(reset, targetDir);
+    // Keep submodules in sync when the repository uses them. Failure here is
+    // reported but does not fail the build: many repos inherit a .gitmodules
+    // whose submodules are optional in a production build.
+    await runGit(['submodule', 'update', '--init', '--recursive'], { cwd: targetDir, token, timeoutMs: 120_000 });
     return attachHead(reset, targetDir);
   }
   fs.mkdirSync(targetDir, { recursive: true });
-  const clone = await runGit(['clone', '--depth', '50', '--branch', branch, '--single-branch', repoUrl, targetDir], { token, timeoutMs: 300_000 });
+  // --recurse-submodules pulls submodule content; Git LFS objects are fetched
+  // automatically by git when git-lfs is installed for the user.
+  const clone = await runGit(
+    ['clone', '--depth', '50', '--branch', branch, '--single-branch', '--recurse-submodules', repoUrl, targetDir],
+    { token, timeoutMs: 300_000 },
+  );
   return attachHead(clone, targetDir);
 }
 

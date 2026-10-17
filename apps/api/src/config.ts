@@ -34,6 +34,10 @@ export interface AppConfig {
   authToken: string;
   isLoopback: boolean;
   root: string;
+  /** Restart applications that were running before a PortPilot restart. */
+  autostart?: boolean;
+  /** GitHub polling interval in ms (0 disables the poller). */
+  pollIntervalMs?: number;
 }
 
 export function loadConfig(): AppConfig {
@@ -78,6 +82,8 @@ export function loadConfig(): AppConfig {
     authToken,
     isLoopback,
     root: paths.root,
+    autostart: (process.env.AUTOSTART ?? 'true').toLowerCase() !== 'false',
+    pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 300_000),
   };
 }
 

@@ -6,6 +6,7 @@ import { runNetworkDiagnostics } from '@portpilot/network-diagnostics';
 import { verifyPublicDomain } from '@portpilot/public-access';
 import { isPortFree } from '@portpilot/runtime-manager';
 import type { AppContext } from './context.js';
+import { syncDnsHostname, removeDnsHostname } from './dns-sync.js';
 
 const DIAG_CACHE_MS = 60_000;
 
@@ -38,6 +39,7 @@ export function registerNetworkRoutes(app: FastifyInstance, ctx: AppContext): vo
       mode: (body.mode as never) ?? 'local',
       publicHostname: body.publicHostname ?? null,
     });
+    syncDnsHostname(ctx.dns, cfg, rec.hostname);
     return reply.code(201).send({ hostname: rec });
   });
 
@@ -48,17 +50,22 @@ export function registerNetworkRoutes(app: FastifyInstance, ctx: AppContext): vo
       const v = validateHostname(String(body.hostname));
       if (!v.ok) throw new ValidationError(v.error!);
     }
+    const before = db.getHostname(id);
     const rec = hostnames.updateHostname(id, {
       hostname: body.hostname ? String(body.hostname).toLowerCase() : undefined,
       mode: body.mode as never,
       publicHostname: body.publicHostname,
     });
+    if (before && before.hostname !== rec.hostname) removeDnsHostname(ctx.dns, cfg, before.hostname);
+    syncDnsHostname(ctx.dns, cfg, rec.hostname);
     return { hostname: rec };
   });
 
   app.delete('/api/hostnames/:id', async (req) => {
     const { id } = req.params as { id: string };
+    const rec = db.getHostname(id);
     hostnames.removeHostname(id);
+    if (rec) removeDnsHostname(ctx.dns, cfg, rec.hostname);
     return { ok: true };
   });
 

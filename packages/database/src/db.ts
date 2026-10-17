@@ -472,6 +472,41 @@ export class PortPilotDb {
       .run(ref, cipher, nowIso());
   }
 
+  /**
+   * Resolve the GitHub credential for a project.
+   *
+   * Order of precedence:
+   *   1. a project-specific secret ref (per-project tokens, if ever set)
+   *   2. the token stored through the dashboard (settings.github_token_ref)
+   *   3. PORTPILOT_GITHUB_TOKEN from the environment
+   *
+   * Everything that talks to GitHub (clone, ls-remote, fetch, webhook-driven
+   * deploys) must go through this, otherwise a token saved in the UI is
+   * silently ignored and private repositories fail while the dashboard claims
+   * a token is configured.
+   */
+  resolveGithubToken(projectTokenRef?: string | null): string | null {
+    if (projectTokenRef) {
+      const perProject = this.getSecret(projectTokenRef);
+      if (perProject) return perProject;
+    }
+    const globalRef = this.getSetting('github_token_ref');
+    if (globalRef) {
+      const stored = this.getSecret(globalRef);
+      if (stored) return stored;
+    }
+    const envToken = process.env.PORTPILOT_GITHUB_TOKEN?.trim();
+    return envToken ? envToken : null;
+  }
+
+  /** Where the resolved GitHub credential came from (never returns the token). */
+  githubTokenSource(): 'project' | 'database' | 'env' | 'none' {
+    const globalRef = this.getSetting('github_token_ref');
+    if (globalRef && this.getSecret(globalRef)) return 'database';
+    if (process.env.PORTPILOT_GITHUB_TOKEN?.trim()) return 'env';
+    return 'none';
+  }
+
   getSecret(ref: string): string | null {
     const r = this.db.prepare('SELECT ciphertext FROM secrets WHERE ref = ?').get(ref) as Row | undefined;
     return r ? this.secrets.decrypt(str(r.ciphertext)) : null;

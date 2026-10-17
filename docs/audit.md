@@ -7,6 +7,23 @@
 
 ---
 
+## Fix status (2026-10-17, later the same day)
+
+All items below marked **FIXED** are implemented and covered by tests
+(`tests/fixes.test.ts`, `tests/api.test.ts`) or verified against a running instance.
+
+| Item | Status |
+|---|---|
+| BUG-1 saved PAT ignored | **FIXED** — `db.resolveGithubToken()` is used by clone, ls-remote, fetch and the worker |
+| BUG-2 DNS records only at startup | **FIXED** — synced on hostname/project create, rename and delete |
+| BUG-3 SPA fallback always on | **FIXED** — opt-in per framework (`isSpaFramework`), plain static sites now 404 |
+| LIMIT-2 apps die with PortPilot | **FIXED** — autostart restarts previously running apps (`AUTOSTART=true`) |
+| LIMIT-3 no webhook alternative | **FIXED** — outbound git poller (`POLL_INTERVAL_MS`, default 5 min) |
+| LIMIT-4 no submodules/LFS | **FIXED** — `--recurse-submodules` + `submodule update` |
+| LIMIT-5 sessions lost on restart | **FIXED** — sessions persisted to `data/sessions.json` (0600, same TTL) |
+| LIMIT-1 DNS cannot serve the public | Intentionally unchanged — documented, and now explicitly a LAN tool |
+| LIMIT-6 Windows unverified | Open — cannot be verified in this Linux environment |
+
 ## Verdict
 
 | Question | Answer |

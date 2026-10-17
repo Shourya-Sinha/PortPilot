@@ -7,6 +7,7 @@ import { ReverseProxy } from '@portpilot/reverse-proxy';
 import { DnsServer } from '@portpilot/dns-server';
 import { PublicAccessManager } from '@portpilot/public-access';
 import { DeployQueue } from '@portpilot/worker';
+import { GitPoller } from './poller.js';
 import { loadConfig } from './config.js';
 import { buildApp } from './app.js';
 import type { AppContext } from './context.js';
@@ -25,6 +26,11 @@ async function main(): Promise<void> {
   const queue = new DeployQueue(db, supervisor, hostnames, logger);
   const publicAccess = new PublicAccessManager();
 
+  // Projects that were up before this process started. They are restarted after
+  // the HTTP server is listening (see autostart below), so a PortPilot restart
+  // does not silently take every deployed site offline.
+  const autostartCandidates: string[] = [];
+
   // Restore runtime metadata after restart (mark dead PIDs as crashed).
   for (const rt of db.listRuntime()) {
     const restored = supervisor.restoreFromState(rt.projectId, {
@@ -33,10 +39,12 @@ async function main(): Promise<void> {
       port: rt.port,
       cwd: rt.cwd,
       startedAt: rt.startedAt,
+      status: rt.status,
     });
     db.setRuntime({ projectId: rt.projectId, deploymentId: rt.deploymentId, status: restored.status, pid: restored.pid, port: restored.port, cwd: restored.cwd, startedAt: restored.startedAt, lastError: restored.lastError });
     if (restored.status === 'crashed') {
-      logger.warn(`Project ${rt.projectId}: process ${rt.pid} was not running after restart (marked crashed).`);
+      logger.warn(`Project ${rt.projectId}: was running before the restart but is no longer alive.`);
+      autostartCandidates.push(rt.projectId);
     }
   }
 
@@ -93,6 +101,27 @@ async function main(): Promise<void> {
   await app.listen({ host: cfg.host, port: cfg.port });
 
   fs.writeFileSync(paths.pidFile, String(process.pid));
+
+  // ---- automatic redeploy poller (works without inbound webhooks) ----
+  const poller = new GitPoller(ctx, cfg.pollIntervalMs ?? 300_000);
+  poller.start();
+
+  // ---- autostart previously running applications ----
+  if ((cfg.autostart ?? true) && autostartCandidates.length > 0) {
+    const { startProjectFromDeployment } = await import('./start-project.js');
+    type StartedApp = import('./start-project.js').StartedApp;
+    for (const projectId of autostartCandidates) {
+      const project = db.getProject(projectId);
+      if (!project) continue;
+      const res: StartedApp = await startProjectFromDeployment(db, supervisor, hostnames, projectId).catch((err) => ({ ok: false, error: String(err) }));
+      if (res.ok) {
+        logger.info(`Autostarted ${project.name} on port ${res.port}`);
+        db.logActivity('app.autostart', `Autostarted "${project.name}" on port ${res.port}`, projectId);
+      } else {
+        logger.warn(`Autostart failed for ${project.name}: ${res.error ?? 'unknown error'}`);
+      }
+    }
+  }
   const tokenHint = cfg.authToken;
   const dashUrl = `http://${cfg.host === '0.0.0.0' ? '127.0.0.1' : cfg.host}:${cfg.port}/?token=${tokenHint}`;
   logger.info('============================================================');
@@ -112,6 +141,7 @@ async function main(): Promise<void> {
     logger.info(`Received ${signal}; shutting down gracefully...`);
     try {
       db.logActivity('system.stop', `PortPilot stopping (${signal})`);
+      poller.stop();
       for (const p of supervisor.list()) {
         if (p.status === 'running') await supervisor.stop(p.projectId).catch(() => undefined);
       }
