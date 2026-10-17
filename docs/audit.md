@@ -21,8 +21,41 @@ All items below marked **FIXED** are implemented and covered by tests
 | LIMIT-3 no webhook alternative | **FIXED** — outbound git poller (`POLL_INTERVAL_MS`, default 5 min) |
 | LIMIT-4 no submodules/LFS | **FIXED** — `--recurse-submodules` + `submodule update` |
 | LIMIT-5 sessions lost on restart | **FIXED** — sessions persisted to `data/sessions.json` (0600, same TTL) |
-| LIMIT-1 DNS cannot serve the public | Intentionally unchanged — documented, and now explicitly a LAN tool |
-| LIMIT-6 Windows unverified | Open — cannot be verified in this Linux environment |
+| BUG-4 path containment allowed siblings sharing a prefix | **FIXED** — `isPathInside()` (path.relative based) replaces `startsWith` in the dashboard server and static file server |
+| LIMIT-1 DNS cannot serve the public | **Cannot be fixed in code** — see below |
+| LIMIT-6 Windows unverified | **Partially addressed** — see below |
+
+### Proving the private-repo path (previously a caveat)
+
+GitHub returns "Repository not found" identically for a missing repo and for bad credentials, so
+a GitHub integration test cannot distinguish "token sent" from "no token sent". The transport is
+therefore observed directly:
+
+* `tests/token-transport.test.ts` stands up a local HTTP git remote that returns `401` and records
+  the `Authorization` header. With a token, git retries with credentials containing it; without
+  one, no credential is ever sent; and the token never appears in git output.
+* End-to-end against the running API: a project created the way the UI creates it had
+  `githubTokenRef = null`, and the clone triggered by `/api/projects/:id/detect` delivered an
+  `Authorization` header containing the token stored through the dashboard. Removing the token
+  produced zero credential headers.
+
+### Why LIMIT-1 cannot be closed in code
+
+PortPilot's DNS module is a LAN resolver: UDP only, A/AAAA only, no SOA/NS, no TCP/53, no
+AXFR/TSIG. Making it delegable would require all of those **plus** a public static IP, two
+nameservers on distinct addresses, and registrar delegation — none of which software on a home
+PC can supply. The honest resolution is the one already implemented: `*.localhost` for this PC,
+the optional DNS module for LANs, and domain + tunnel for public access
+(see [public-domain.md](public-domain.md)).
+
+### What was done about LIMIT-6 (Windows)
+
+Windows could not be executed here, so the platform-specific code paths were reviewed directly.
+That review found a real defect that affected every platform (BUG-4, sibling-prefix path
+containment) and it is now fixed with tests. Remaining Windows-only assumptions that still need a
+real Windows run: `GIT_ASKPASS` as a `.cmd` script, `taskkill /T /F` process-tree shutdown,
+`cmd.exe /d /s /c` command execution, and `*.localhost` resolution in Edge/Chrome. Run
+`npm run doctor` and `npm run verify:flow` on the Windows machine to cover those.
 
 ## Verdict
 

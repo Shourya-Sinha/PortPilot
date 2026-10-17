@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import http from 'node:http';
+import { isPathInside } from '@portpilot/shared';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 
@@ -38,7 +39,7 @@ export function createStaticServer(root: string, opts: { spa?: boolean } = {}): 
       let rel = decodeURIComponent(url.pathname);
       if (rel.endsWith('/')) rel += 'index.html';
       const filePath = path.resolve(rootResolved, '.' + rel);
-      if (!filePath.startsWith(rootResolved + path.sep) && filePath !== rootResolved) {
+      if (!isPathInside(rootResolved, filePath)) {
         res.writeHead(403).end('Forbidden');
         return;
       }
