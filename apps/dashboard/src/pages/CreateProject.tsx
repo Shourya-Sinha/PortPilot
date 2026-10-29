@@ -35,6 +35,7 @@ export default function CreateProject() {
   const [preferredPort, setPreferredPort] = useState('');
   const [healthCheckPath, setHealthCheckPath] = useState('/');
   const [publicHostname, setPublicHostname] = useState('');
+  const [rootDomain, setRootDomain] = useState<string | null>(null);
   const [envText, setEnvText] = useState('');
 
   const [detected, setDetected] = useState<DetectedConfig | null>(null);
@@ -48,6 +49,27 @@ export default function CreateProject() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
+
+  // Load the configured root domain so new projects get an automatic public
+  // subdomain: <websiteName>.<rootDomain>.
+  useEffect(() => {
+    api<{ rootDomain: string | null; configured: boolean }>('/api/public-access/root-domain')
+      .then((r) => {
+        setRootDomain(r.rootDomain ?? null);
+        if (r.rootDomain && websiteName && !publicHostname) {
+          setPublicHostname(`${websiteName}.${r.rootDomain}`);
+        }
+      })
+      .catch(() => undefined);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-derive the automatic public hostname whenever the website name or root
+  // domain changes (only when the user hasn't typed a custom one).
+  useEffect(() => {
+    if (rootDomain && websiteName && publicHostname !== `${websiteName}.${rootDomain}`) {
+      setPublicHostname(`${websiteName}.${rootDomain}`);
+    }
+  }, [rootDomain, websiteName, publicHostname]);
 
   const slugify = (s: string) =>
     s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63);
@@ -263,14 +285,26 @@ export default function CreateProject() {
               </div>
             </div>
           </div>
-          <div className="field">
-            <label>Optional public hostname</label>
-            <input className="input" value={publicHostname} onChange={(e) => setPublicHostname(e.target.value)} placeholder="myapp.example.com (optional)" />
-            <div className="hint">
-              Only used if you actually control this name and configure public DNS + networking. The dashboard never
-              claims a made-up domain is publicly reachable.
+          {rootDomain ? (
+            <div className="field">
+              <label>Public hostname (automatic)</label>
+              <input className="input" readOnly value={publicHostname || `${websiteName}.${rootDomain}`} />
+              <div className="hint">
+                Automatically derived from your root domain <code>{rootDomain}</code>. This project will be reachable
+                at <code>{publicHostname || `${websiteName}.${rootDomain}`}</code> once you add the DNS A record and
+                expose the proxy (port forward 80/443 or a tunnel).
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="field">
+              <label>Optional public hostname</label>
+              <input className="input" value={publicHostname} onChange={(e) => setPublicHostname(e.target.value)} placeholder="myapp.example.com (optional)" />
+              <div className="hint">
+                Only used if you actually control this name and configure public DNS + networking. The dashboard never
+                claims a made-up domain is publicly reachable.
+              </div>
+            </div>
+          )}
           <div className="row-between">
             <button className="btn" onClick={() => setStep(0)}>Back</button>
             <button className="btn btn-primary" disabled={!canNext()} onClick={() => setStep(2)}>Next: build configuration</button>
@@ -392,6 +426,14 @@ export default function CreateProject() {
           <dl className="kv">
             <dt>Project</dt><dd>{name}</dd>
             <dt>Website name</dt><dd><code>{websiteName}</code> — local hostname <code>{websiteName}.localhost</code> (local registration only)</dd>
+            {rootDomain ? (
+              <>
+                <dt>Public hostname</dt>
+                <dd>
+                  <code>{publicHostname || `${websiteName}.${rootDomain}`}</code> (auto-registered, mode public)
+                </dd>
+              </>
+            ) : null}
             <dt>Repository</dt><dd className="mono">{repoUrl} @ {branch}</dd>
             <dt>Mode</dt><dd>{deploymentMode} · {framework} · {packageManager}</dd>
             <dt>Commands</dt><dd className="mono">install: {installCommand || '—'} · build: {buildCommand || '—'} · start: {startCommand || '—'}</dd>
