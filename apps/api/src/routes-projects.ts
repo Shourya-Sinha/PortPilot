@@ -25,6 +25,7 @@ import { runGit, validateGitRepoUrl, listRemoteBranches, generateWebhookSecret, 
 import { syncDnsHostname, removeDnsHostname } from './dns-sync.js';
 import { startProjectFromDeployment } from './start-project.js';
 import { isPidAlive } from '@portpilot/runtime-manager';
+import { verifyPublicDomain } from '@portpilot/public-access';
 import type { AppContext } from './context.js';
 
 interface ProjectBody {
@@ -100,6 +101,25 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     const websiteName = String(body.websiteName).toLowerCase();
     const name = String(body.name);
 
+    // --- Automated public subdomain under the configured root domain ---
+    // If a root domain (e.g. portpilot.com) is configured, every new project
+    // gets <websiteName>.<rootDomain> as its public hostname automatically,
+    // registered in reverse-proxy route table with mode 'public'.
+    const envRootDomain = ctx.cfg.rootDomain ?? null;
+    const dbRootDomain = db.getSetting('root_domain');
+    const rootDomain = dbRootDomain ?? envRootDomain;
+    let autoPublicHostname: string | null = null;
+    let hostnameMode: HostnameMode = 'local';
+    if (rootDomain && !body.publicHostname) {
+      autoPublicHostname = `${websiteName}.${rootDomain}`;
+      hostnameMode = 'public';
+    } else if (body.publicHostname) {
+      autoPublicHostname = body.publicHostname;
+      hostnameMode = body.hostnameMode ?? 'public';
+    } else {
+      hostnameMode = body.hostnameMode ?? 'local';
+    }
+
     if (db.getProjectByWebsiteName(websiteName)) throw new ConflictError(`Website name "${websiteName}" is already registered.`);
     if (db.getProjectByName(name)) throw new ConflictError(`Project name "${name}" is already in use.`);
 
@@ -123,13 +143,21 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
       outputDir: body.outputDir ?? null,
       preferredPort: body.preferredPort ?? null,
       healthCheckPath: body.healthCheckPath ?? '/',
-      hostnameMode: body.hostnameMode ?? 'local',
-      publicHostname: body.publicHostname ?? null,
+      hostnameMode,
+      publicHostname: autoPublicHostname,
       configConfirmed: body.confirm === true,
       webhookSecret: generateWebhookSecret(),
     });
 
     const registered = hostnames.registerLocalHostname(project.id, websiteName);
+    // Promote the auto-registered hostname to public mode when a root domain
+    // is configured, so the reverse proxy serves <websiteName>.<rootDomain>.
+    if (rootDomain && autoPublicHostname) {
+      hostnames.updateHostname(registered.id, {
+        mode: 'public',
+        publicHostname: autoPublicHostname,
+      });
+    }
     syncDnsHostname(ctx.dns, ctx.cfg, registered.hostname);
     const act = db.logActivity('project.created', `Project "${name}" created with website name "${websiteName}"`, project.id);
     ctx.logger.info(`Project ${project.id} created (${websiteName}.localhost)`);
@@ -364,6 +392,32 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     if (!project) throw new NotFoundError('Project not found');
     const res = await startProjectFromDeployment(db, supervisor, hostnames, id);
     if (!res.ok) throw new ValidationError(res.error ?? 'Could not start the application.');
+    // Auto-verify the public hostname (if any) once the app is running, so the
+    // dashboard can show <websiteName>.rootDomain as publicly reachable without
+    // the user clicking anything. Best-effort and never blocks the start response.
+    if (project.publicHostname) {
+      void (async () => {
+        try {
+          const result = await verifyPublicDomain(project.publicHostname!, {
+            expectedPublicIp: undefined,
+            localProxyPort: ctx.cfg.proxyPort,
+            timeoutMs: 6000,
+          });
+          const rec = db.getHostnameByName(`${project.websiteName}.localhost`);
+          if (rec) {
+            db.updateHostname(rec.id, {
+              mode: 'public',
+              publicHostname: project.publicHostname,
+              resolutionStatus: result.resolves ? 'resolvable_public' : 'unresolvable',
+              reachabilityStatus: result.servedByPortPilot ? 'reachable_external' : 'unreachable_external',
+            });
+          }
+          db.logActivity('public.auto-verified', `Auto-verified ${project.publicHostname}: ${result.verdict}`, id);
+        } catch {
+          /* best-effort; local deployment still works */
+        }
+      })();
+    }
     return { ok: true, port: res.port, pid: res.pid };
   });
 

@@ -39,7 +39,11 @@ export class ReverseProxy {
   resolveRoute(hostHeader: string | undefined): ProxyRouteInfo | null {
     if (!hostHeader) return null;
     const hostname = hostHeader.split(':')[0].toLowerCase();
-    const rec = this.opts.db.getHostnameByName(hostname);
+    // Match by the registered local hostname (e.g. my-app.localhost) first, then
+    // by the public hostname (e.g. my-app.portpilot.com) so automated public
+    // subdomains are routed by the reverse proxy without a separate local entry.
+    let rec = this.opts.db.getHostnameByName(hostname);
+    if (!rec) rec = this.opts.db.getHostnameByPublicHostname(hostname);
     if (!rec) return null;
     return { hostname, targetPort: rec.targetPort, projectId: rec.projectId };
   }

@@ -309,4 +309,115 @@ export function registerNetworkRoutes(app: FastifyInstance, ctx: AppContext): vo
   }));
 
   app.get('/api/public-access/last-check', async () => ({ checkedAt: ctx.diagCache?.at ? new Date(ctx.diagCache.at).toISOString() : null, diagnostics: ctx.diagCache?.data ?? null, at: nowIso() }));
+
+  // ---------- root domain: automated public subdomains ----------
+  // When PORTPILOT_ROOT_DOMAIN (or the root_domain setting) is set to e.g.
+  // portpilot.com, every new project is automatically registered as
+  // <websiteName>.portpilot.com with mode 'public' and routed by the reverse
+  // proxy. These endpoints let the dashboard configure and diagnose it.
+  function resolveRootDomain(): string | null {
+    const dbVal = db.getSetting('root_domain');
+    if (dbVal && dbVal !== '') return dbVal;
+    return cfg.rootDomain ?? null;
+  }
+
+  async function fetchPublicIp(): Promise<string | null> {
+    try {
+      const res = await fetch(cfg.publicIpCheckUrl, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) return (await res.text()).trim() || null;
+    } catch {
+      /* best-effort only */
+    }
+    return null;
+  }
+
+  app.get('/api/public-access/root-domain', async () => {
+    const rootDomain = resolveRootDomain();
+    return { rootDomain, configured: Boolean(rootDomain) };
+  });
+
+  app.patch('/api/public-access/root-domain', async (req) => {
+    const body = (req.body ?? {}) as { rootDomain?: string | null };
+    const value = body.rootDomain == null ? null : String(body.rootDomain).trim().toLowerCase();
+    if (value !== null) {
+      const v = validateHostname(value);
+      if (!v.ok) throw new ValidationError(v.error!);
+      if (!value.includes('.')) throw new ValidationError('Root domain must be a full domain like portpilot.com.');
+    }
+    db.setSetting('root_domain', value ?? '');
+    return { rootDomain: value ?? null, configured: Boolean(value) };
+  });
+
+  /** DNS records the user must add at their registrar so <name>.rootDomain reaches this PC. */
+  app.get('/api/public-access/dns-guidance', async () => {
+    const rootDomain = resolveRootDomain();
+    const publicIp = await fetchPublicIp();
+    const publicHosts = db.listHostnames().filter((h) => h.mode === 'public' && h.publicHostname);
+    const records = publicHosts.map((h) => ({
+      name: h.publicHostname,
+      type: 'A' as const,
+      address: publicIp ?? '<YOUR_PUBLIC_IP>',
+      ttl: 300,
+      hint: `Route ${h.publicHostname} to this PC (project ${h.projectId ?? '—'}).`,
+    }));
+    if (rootDomain) {
+      records.push({
+        name: `*.${rootDomain}`,
+        type: 'A' as const,
+        address: publicIp ?? '<YOUR_PUBLIC_IP>',
+        ttl: 300,
+        hint: 'Wildcard: every future project gets an automatic subdomain under your root domain.',
+      });
+    }
+    return {
+      rootDomain,
+      publicIp,
+      records,
+      note: publicIp
+        ? 'Add these A records at your domain registrar (or Cloudflare). If your IP changes, update them or use a dynamic-DNS updater.'
+        : 'Could not detect your public IP automatically. Find it in Network & Public Access diagnostics, then add A records pointing at it.'
+    };
+  });
+
+  /**
+   * Verify every public hostname end to end (name -> target -> port -> app).
+   * Best-effort: results are persisted on each hostname record but a failed
+   * check never breaks local deployment.
+   */
+  app.post('/api/public-access/verify-all', async (req) => {
+    const rootDomain = resolveRootDomain();
+    if (!rootDomain) throw new ValidationError('No root domain configured. Set it in Settings first.');
+
+    let diag = ctx.diagCache?.data ?? null;
+    if (!diag) {
+      diag = await runNetworkDiagnostics({ publicIpCheckUrl: cfg.publicIpCheckUrl, publicHostnameConfigured: true });
+      ctx.diagCache = { at: Date.now(), data: diag };
+    }
+
+    const publicHosts = db.listHostnames().filter((h) => h.mode === 'public' && h.publicHostname);
+    const results: Array<{ hostname: string; projectId: string | null; verdict: string }> = [];
+
+    for (const h of publicHosts) {
+      const hostname = h.publicHostname!;
+      try {
+        const result = await verifyPublicDomain(hostname, {
+          expectedPublicIp: diag.publicIp,
+          localProxyPort: cfg.proxyPort,
+          timeoutMs: 6000,
+        });
+        db.updateHostname(h.id, {
+          mode: 'public',
+          publicHostname: h.publicHostname,
+          resolutionStatus: result.resolves ? 'resolvable_public' : 'unresolvable',
+          reachabilityStatus: result.servedByPortPilot ? 'reachable_external' : 'unreachable_external',
+        });
+        db.logActivity('public.auto-verified', `Auto-verified ${hostname}: ${result.verdict}`, h.projectId ?? undefined);
+        results.push({ hostname, projectId: h.projectId, verdict: result.verdict });
+      } catch (err) {
+        results.push({ hostname, projectId: h.projectId, verdict: 'error' });
+        ctx.logger?.warn?.(`Auto-verify failed for ${hostname}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { rootDomain, results };
+  });
 }

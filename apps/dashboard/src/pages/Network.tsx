@@ -30,6 +30,12 @@ interface DomainCheck {
   possibleHairpinFalseNegative: boolean;
   nextSteps: string[];
 }
+interface DnsRecord {
+  name: string; type: string; address: string; ttl: number; hint: string;
+}
+interface DnsGuidance {
+  rootDomain: string | null; publicIp: string | null; records: DnsRecord[]; note: string;
+}
 
 const VERDICT_LABEL: Record<DomainCheck['verdict'], { text: string; kind: 'info' | 'warn' | 'danger' }> = {
   works: { text: 'Working end to end', kind: 'info' },
@@ -52,6 +58,9 @@ export default function Network() {
   const [domainCheck, setDomainCheck] = useState<DomainCheck | null>(null);
   const [domainBusy, setDomainBusy] = useState(false);
   const [domainError, setDomainError] = useState<string | null>(null);
+  const [dnsGuidance, setDnsGuidance] = useState<DnsGuidance | null>(null);
+  const [verifyAllResults, setVerifyAllResults] = useState<Array<{ hostname: string; projectId: string | null; verdict: string }> | null>(null);
+  const [verifyAllBusy, setVerifyAllBusy] = useState(false);
 
   const verifyDomain = async () => {
     setDomainBusy(true);
@@ -71,18 +80,33 @@ export default function Network() {
     setBusy(true);
     setError(null);
     try {
-      const [d, p] = await Promise.all([
+      const [d, p, g] = await Promise.all([
         api<{ diagnostics: Diagnostics }>('/api/network/diagnostics'),
         api<{ overall: string; strategies: Strategy[]; honesty: string[] }>('/api/public-access/status'),
+        api<DnsGuidance>('/api/public-access/dns-guidance'),
       ]);
       setDiag(d.diagnostics);
       setStrategies(p.strategies);
       setOverall(p.overall);
       setHonesty(p.honesty);
+      setDnsGuidance(g);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const verifyAll = async () => {
+    setVerifyAllBusy(true);
+    setVerifyAllResults(null);
+    try {
+      const res = await api<{ rootDomain: string | null; results: Array<{ hostname: string; projectId: string | null; verdict: string }> }>('/api/public-access/verify-all', { method: 'POST', body: {} });
+      setVerifyAllResults(res.results);
+    } catch (e) {
+      setDomainError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setVerifyAllBusy(false);
     }
   };
 
@@ -234,6 +258,75 @@ export default function Network() {
             </ul>
           </div>
         ) : null}
+      </div>
+
+      <div className="card mt">
+        <h3>Automated public subdomains</h3>
+        <p className="muted">
+          When a root domain is configured (Settings), every project is auto-registered as
+          <code>anatainfratech.{dnsGuidance?.rootDomain ?? ''}</code> and routed by the reverse proxy. Add the DNS A records
+          below at your registrar, then verify.
+        </p>
+        {dnsGuidance?.rootDomain ? (
+          <>
+            <div className="row mb">
+              <button
+                className="btn btn-primary"
+                disabled={verifyAllBusy || !dnsGuidance.publicIp}
+                onClick={verifyAll}
+              >
+                {verifyAllBusy ? 'Verifying all…' : 'Auto-verify all public hostnames'}
+              </button>
+              <span className="stat-sub" style={{ marginLeft: '0.75rem' }}>
+                Root domain: <code>{dnsGuidance.rootDomain}</code> · public IP: {dnsGuidance.publicIp ?? 'not detected'}
+              </span>
+            </div>
+            <div className="table-wrap mb">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Record</th><th>Type</th><th>Points to</th><th>TTL</th><th>Purpose</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(dnsGuidance.records ?? []).map((r, i) => (
+                    <tr key={i}>
+                      <td className="mono">{r.name}</td>
+                      <td>{r.type}</td>
+                      <td className="mono">{r.address}</td>
+                      <td>{r.ttl}</td>
+                      <td>{r.hint}</td>
+                    </tr>
+                  ))}
+                  {(dnsGuidance.records ?? []).length === 0 && (
+                    <tr><td colSpan={5} className="muted">No public hostnames yet. Create a project to auto-generate one.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="stat-sub">{dnsGuidance.note}</div>
+            {verifyAllResults ? (
+              <div className="mt">
+                <div className="stat-label">Verification results</div>
+                {(verifyAllResults ?? []).map((r, i) => (
+                  <div key={i} className="row" style={{ gap: '1rem' }}>
+                    <span className="mono">{r.hostname}</span>
+                    <span>{r.projectId ?? '—'}</span>
+                    <StatusBadge
+                      status={r.verdict === 'works' ? 'succeeded' : r.verdict === 'reachable_not_ours' || r.verdict === 'name_only' ? 'unlikely' : 'failed'}
+                      label={r.verdict}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <div className="notice notice-warn">
+            No root domain configured. Go to Settings to set one (e.g. <code>portpilot.com</code>), then new projects
+            get automatic public subdomains.
+          </div>
+        )}
       </div>
 
       <Notice kind="warn">

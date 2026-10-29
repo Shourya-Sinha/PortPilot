@@ -33,6 +33,7 @@ export interface AppConfig {
   publicIpCheckUrl: string;
   authToken: string;
   isLoopback: boolean;
+  rootDomain: string | null;
   root: string;
   /** Restart applications that were running before a PortPilot restart. */
   autostart?: boolean;
@@ -84,9 +85,10 @@ export function loadConfig(): AppConfig {
     dnsHost: process.env.DNS_HOST ?? '127.0.0.1',
     dnsZone: process.env.DNS_ZONE ?? 'portpilot.home.arpa',
     dnsTtl: Number(process.env.DNS_TTL ?? 60),
-    publicIpCheckUrl: process.env.PUBLIC_IP_CHECK_URL ?? 'https://api.ipify.org',
-    authToken,
-    isLoopback,
+  publicIpCheckUrl: process.env.PUBLIC_IP_CHECK_URL ?? 'https://api.ipify.org',
+  authToken,
+  isLoopback,
+  rootDomain: process.env.PORTPILOT_ROOT_DOMAIN?.trim() || null,
     root: paths.root,
     autostart: (process.env.AUTOSTART ?? 'true').toLowerCase() !== 'false',
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 300_000),

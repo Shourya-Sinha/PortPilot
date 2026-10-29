@@ -377,6 +377,11 @@ export class PortPilotDb {
     return r ? rowToHostname(r) : null;
   }
 
+  getHostnameByPublicHostname(publicHostname: string): HostnameRecord | null {
+    const r = this.db.prepare('SELECT * FROM hostnames WHERE public_hostname = ?').get(publicHostname) as Row | undefined;
+    return r ? rowToHostname(r) : null;
+  }
+
   listHostnames(projectId?: string): HostnameRecord[] {
     const rows = (
       projectId

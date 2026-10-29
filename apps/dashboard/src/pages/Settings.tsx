@@ -5,11 +5,16 @@ import { Notice, StatusBadge } from '../components/ui';
 interface Health {
   ok: boolean; time: string; api: string; proxy: string; dns: string; queue: string; node: string; pid: number;
 }
+interface RootDomain {
+  rootDomain: string | null; configured: boolean;
+}
 
 export default function Settings() {
   const [health, setHealth] = useState<Health | null>(null);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
+  const [rootDomain, setRootDomain] = useState<RootDomain>({ rootDomain: null, configured: false });
+  const [rootInput, setRootInput] = useState('');
   const [newKey, setNewKey] = useState('');
   const [newVal, setNewVal] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -21,7 +26,26 @@ export default function Settings() {
       setSettings(r.settings);
       setConfig(r.config);
     }).catch(() => undefined);
+    api<RootDomain>('/api/public-access/root-domain').then(setRootDomain).catch(() => undefined);
     api<{ lines: string[] }>('/api/system/logs?name=api').then((r) => setLogLines(r.lines.slice(-60))).catch(() => undefined);
+  };
+
+  const saveRootDomain = async () => {
+    const val = rootInput.trim() || null;
+    try {
+      const res = await api<RootDomain>('/api/public-access/root-domain', {
+        method: 'PATCH',
+        body: { rootDomain: val },
+      });
+      setRootDomain(res);
+      setRootInput(res.rootDomain ?? '');
+      setNotice(res.configured
+        ? `Root domain set to ${res.rootDomain}. New projects will be auto-registered as <websiteName>.${res.rootDomain}.`
+        : 'Root domain cleared.');
+      load();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Failed to save root domain.');
+    }
   };
 
   useEffect(() => {
@@ -86,6 +110,48 @@ export default function Settings() {
             Runtime configuration lives in <code>.env</code> (see <code>.env.example</code>). Values here are metadata
             stored in SQLite. The full access token is never sent to the browser.
           </Notice>
+        </div>
+
+        <div className="card mt">
+          <h3>Automated public subdomains (root domain)</h3>
+          <p className="muted" style={{ marginBottom: '0.6rem' }}>
+            Set a domain you own (e.g. <code>portpilot.com</code>) once. Every new project is then automatically
+            registered as <code>anatainfratech.portpilot.com</code> with mode <b>public</b> and routed by the reverse
+            proxy — no manual hostname entry per project.
+          </p>
+          <div className="row mb">
+            <input
+              className="input"
+              style={{ maxWidth: 340 }}
+              value={rootInput}
+              onChange={(e) => setRootInput(e.target.value)}
+              placeholder="portpilot.com"
+            />
+            <button className="btn btn-primary btn-sm" onClick={saveRootDomain}>
+              {rootDomain.configured ? 'Update root domain' : 'Set root domain'}
+            </button>
+            {rootDomain.configured ? (
+              <button className="btn btn-sm" onClick={saveRootDomain} style={{ marginLeft: '0.4rem' }}>
+                clear
+              </button>
+            ) : null}
+          </div>
+          {rootDomain.configured ? (
+            <div className="notice notice-info">
+              <div style={{ fontWeight: 600 }}>Active root domain: <code>{rootDomain.rootDomain}</code></div>
+              <div className="stat-sub">
+                New project <code>anatainfratech</code> &rarr; <code>anatainfratech.{rootDomain.rootDomain}</code>
+              </div>
+              <div className="stat-sub mt">
+                Still required: add an A record (or wildcard <code>*.{rootDomain.rootDomain}</code>) at your registrar
+                pointing at this PC&rsquo;s public IP, and expose the proxy (port forward 80/443 or a tunnel).
+              </div>
+            </div>
+          ) : (
+            <div className="notice notice-warn">
+              No root domain configured. Projects use only local <code>*.localhost</code> hostnames until you set one.
+            </div>
+          )}
         </div>
 
         <div className="card">

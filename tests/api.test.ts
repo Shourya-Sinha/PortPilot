@@ -285,3 +285,86 @@ describe('overview & hostname APIs', () => {
     expect(body.honesty.length).toBeGreaterThan(0);
   });
 });
+
+describe('automated public subdomains (root domain)', () => {
+  it('configures and clears the root domain', async () => {
+    const set = await app.inject({
+      method: 'PATCH',
+      url: '/api/public-access/root-domain',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { rootDomain: 'portpilot.test' },
+    });
+    expect(set.statusCode).toBe(200);
+    expect((set.json() as { rootDomain: string | null; configured: boolean })).toMatchObject({
+      rootDomain: 'portpilot.test',
+      configured: true,
+    });
+
+    const get = await app.inject({ method: 'GET', url: '/api/public-access/root-domain', headers: { cookie } });
+    expect(get.statusCode).toBe(200);
+    expect((get.json() as { rootDomain: string | null }).rootDomain).toBe('portpilot.test');
+
+    const cleared = await app.inject({
+      method: 'PATCH',
+      url: '/api/public-access/root-domain',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { rootDomain: null },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect((cleared.json() as { configured: boolean }).configured).toBe(false);
+  });
+
+  it('rejects a bare hostname that is not a full domain', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/public-access/root-domain',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { rootDomain: 'notadomain' },
+    });
+    expect(res.statusCode).toBe(422);
+  });
+
+  it('auto-registers a new project as <websiteName>.<rootDomain> with mode public', async () => {
+    await app.inject({
+      method: 'PATCH',
+      url: '/api/public-access/root-domain',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { rootDomain: 'portpilot.test' },
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: {
+        name: 'My Portfolio',
+        websiteName: 'my-portfolio',
+        repoUrl: 'https://github.com/example/portfolio.git',
+        branch: 'main',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json() as { project: { id: string; websiteName: string; publicHostname: string | null; hostnameMode: string }; localUrl: string };
+    expect(body.project.publicHostname).toBe('my-portfolio.portpilot.test');
+    expect(body.project.hostnameMode).toBe('public');
+
+    // The reverse-proxy route must match the public domain (not just .localhost).
+    const byPublic = ctx.db.getHostnameByPublicHostname('my-portfolio.localhost');
+    expect(byPublic).toBeNull();
+    const byLocal = ctx.db.getHostnameByName('my-portfolio.localhost');
+    expect(byLocal?.mode).toBe('public');
+    expect(byLocal?.publicHostname).toBe('my-portfolio.portpilot.test');
+  });
+
+  it('DNS guidance lists A records for public hostnames', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/public-access/dns-guidance', headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { rootDomain: string | null; records: { name: string; type: string; address: string }[] };
+    expect(body.rootDomain).toBe('portpilot.test');
+    const mine = body.records.find((r) => r.name === 'my-portfolio.portpilot.test');
+    expect(mine).toBeDefined();
+    expect(mine?.type).toBe('A');
+    const wildcard = body.records.find((r) => r.name === '*.portpilot.test');
+    expect(wildcard).toBeDefined();
+  });
+});
